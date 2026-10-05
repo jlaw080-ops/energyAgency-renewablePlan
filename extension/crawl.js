@@ -4,6 +4,7 @@
 //   목록 페이지: 각 행의 건물명을 클릭 → 팝업이 열림
 //   팝업 페이지: 기관명·담당부서·건물명·주소·착공/준공예정일·에너지원 표를 읽어 저장소(crawlInbox)에 넣고 닫힘
 //   목록 페이지: 준공예정일이 오늘보다 이전이면 제외, 아니면 구글 시트에 한 행 추가
+//              (나라 앱 주소가 설정돼 있으면 나라 앱에도 보냄)
 //   작업 기록(crawlLog)에 남긴 건은 다음 실행 때 건너뜀
 //   한 페이지가 끝나면 다음 페이지 번호를 눌러 계속 진행
 //
@@ -15,7 +16,7 @@
   if (window.__nrCrawlLoaded) return;
   window.__nrCrawlLoaded = true;
 
-  const VERSION = '1.4.0';
+  const VERSION = '1.5.0';
   const isTop = window.top === window;
   const STATE = 'crawlState';     // { running, awaiting, assist, page, stats, startedAt }
   const LOG = 'crawlLog';         // { [key]: { status, org, name, at } }
@@ -169,8 +170,7 @@
       const src = c(iSrc);
       const cap = c(iCap);
       if (!src || !/\d/.test(cap) || norm(src) === '에너지원') continue; // 빈 줄·"데이터 없음" 줄 제외
-      const form = c(iForm);
-      out.push(`${src}${form ? ' ' + form : ''}: ${cap} kW`);
+      out.push({ source: src, form: c(iForm), cap });
     }
     return out;
   }
@@ -464,7 +464,25 @@
       H: fmtDate(d.start),
       I: fmtDate(d.end),
       J: d.dept,
-      R: (d.energy || []).join('\n'),
+      R: (d.energy || []).map(energyText).join('\n'),
+    };
+  }
+
+  const energyText = (e) => `${e.source}${e.form ? ' ' + e.form : ''}: ${e.cap} kW`;
+
+  // 나라 앱 받는 주소(POST /api/nr-plans)의 한 행
+  function toNaraRow(d, key) {
+    return {
+      key,
+      org: d.org,
+      name: d.name,
+      addr: d.addr,
+      start: fmtDate(d.start),
+      end: fmtDate(d.end),
+      dept: d.dept,
+      energy: (d.energy || []).map((e) => ({
+        source: e.source, form: e.form, capacity_kw: Number(String(e.cap).replace(/,/g, '')),
+      })).filter((e) => e.capacity_kw > 0),
     };
   }
 
@@ -556,7 +574,7 @@
       while (true) {
         const list = findList();
         if (!list) { await finish('신청서 목록 표를 찾지 못했습니다. "진단 정보 복사"를 눌러 보내 주세요.'); return; }
-        const settings = await new Promise((r) => chrome.storage.sync.get({ sheetUrl: '', crawlDelay: 1000 }, r));
+        const settings = await new Promise((r) => chrome.storage.sync.get({ sheetUrl: '', naraUrl: '', crawlDelay: 1000 }, r));
         const pg = findPager(list.tables);
         ui(`${pg ? pg.cur : 1}페이지: 목록 ${list.items.length}건`);
         if (!list.items.length) await sleep(1000);
@@ -615,6 +633,21 @@
             } else {
               log[it.key] = { ...entry, status: 'collected' };
               stats.collected = (stats.collected || 0) + 1;
+            }
+            if (settings.naraUrl) {
+              const resp = await send({ type: 'nara-send', rows: [toNaraRow(d, it.key)] });
+              const r = resp && resp.ok && resp.results && resp.results[0];
+              if (!r || r.saved === 'invalid') {
+                // 기록하지 않고 멈춘다 — 다음 실행 때 이 건부터 다시 보낸다
+                delete log[it.key];
+                stats.error = (stats.error || 0) + 1;
+                const msg = `나라 앱 전송 실패: ${(r && r.error) || (resp && resp.error) || '응답 없음'}`;
+                await patchState({ stats, lastError: msg });
+                await finish(`${msg} — 설정 5번에서 연결 테스트를 해 보세요.`);
+                return;
+              }
+              log[it.key].nara = r.match;
+              stats.nara = (stats.nara || 0) + 1;
             }
           }
           await set({ [LOG]: log });
@@ -720,8 +753,8 @@
   }
 
   async function start() {
-    const { sheetUrl } = await new Promise((r) => chrome.storage.sync.get({ sheetUrl: '' }, r));
-    if (!sheetUrl && !confirm('구글 시트 연결(설정 4번)이 아직 없습니다.\n시트에 쓰지 않고 수집만 할까요? (설정 페이지에서 결과를 복사할 수 있습니다)')) return;
+    const { sheetUrl, naraUrl } = await new Promise((r) => chrome.storage.sync.get({ sheetUrl: '', naraUrl: '' }, r));
+    if (!sheetUrl && !naraUrl && !confirm('구글 시트 연결(설정 4번)이 아직 없습니다.\n시트에 쓰지 않고 수집만 할까요? (설정 페이지에서 결과를 복사할 수 있습니다)')) return;
     try { sessionStorage.setItem('nrcrawl', '1'); } catch (e) { /* ignore */ }
     await set({ [STATE]: { running: true, awaiting: null, assist: false, page: 1, stats: {}, startedAt: new Date().toISOString() }, [POPUP_DIAG]: null });
     ui('시작합니다.');
@@ -745,7 +778,7 @@
     panel.querySelector('[data-act="start"]').disabled = !!st.running;
     panel.querySelector('[data-act="stop"]').disabled = !st.running;
     panel.querySelector('#nrcrawl-stats').innerHTML =
-      `<span>시트 작성 <b>${s.written || 0}</b></span><span>수집 <b>${s.collected || 0}</b></span>` +
+      `<span>시트 작성 <b>${s.written || 0}</b></span><span>수집 <b>${s.collected || 0}</b></span><span>나라 앱 <b>${s.nara || 0}</b></span>` +
       `<span>준공 경과 제외 <b>${s.past || 0}</b></span><span>시트에 이미 있음 <b>${s.exists || 0}</b></span><span>일정 없음 제외 <b>${s.nodate || 0}</b></span><span>오류 <b>${s.error || 0}</b></span>` +
       (st.running && st.assist ? '<span class="assist">직접 클릭 모드</span>' : '');
     const m = panel.querySelector('#nrcrawl-msg');

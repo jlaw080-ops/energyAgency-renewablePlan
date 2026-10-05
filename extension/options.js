@@ -206,11 +206,41 @@
     else msg('#gs-msg', '연결 실패: ' + ((r && r.error) || '응답 없음'), 'err');
   });
 
+  // ---------- 나라 앱으로 보내기 ----------
+  // 권한 요청은 클릭 직후(사용자 동작 안)에 해야 크롬이 창을 띄운다 — await보다 먼저 부른다.
+  $('#nara-save').addEventListener('click', () => {
+    const raw = $('#nara-url').value.trim().replace(/\/+$/, '');
+    const token = $('#nara-token').value.trim();
+    let origin = '';
+    if (raw) {
+      try {
+        const u = new URL(raw);
+        if (!/^https?:$/.test(u.protocol)) throw new Error('scheme');
+        origin = `${u.protocol}//${u.hostname}/*`;
+      } catch (e) {
+        return msg('#nara-msg', '나라 앱 주소는 http://127.0.0.1:8000 처럼 적으세요.', 'err');
+      }
+    }
+    const ask = origin ? chrome.permissions.request({ origins: [origin] }) : Promise.resolve(true);
+    ask.then(async (granted) => {
+      await chrome.storage.sync.set({ naraUrl: raw });
+      await chrome.storage.local.set({ naraToken: token });
+      if (!raw) return msg('#nara-msg', '저장했습니다. (주소가 비어 있어 나라 앱으로 보내지 않습니다)', 'ok');
+      if (!granted) return msg('#nara-msg', '주소에 접근할 권한이 없어 보낼 수 없습니다. 다시 저장하고 허용을 누르세요.', 'err');
+      if (!token) return msg('#nara-msg', '토큰을 넣으세요. 나라 앱 .env의 NARA_IMPORT_TOKEN 값입니다.', 'err');
+      msg('#nara-msg', '연결 확인 중...');
+      const r = await chrome.runtime.sendMessage({ type: 'nara-ping' });
+      if (r && r.ok) msg('#nara-msg', '연결 성공: 크롤링한 설치계획서를 나라 앱으로도 보냅니다.', 'ok');
+      else msg('#nara-msg', '연결 실패: ' + ((r && r.error) || '응답 없음'), 'err');
+    });
+  });
+
   async function renderLog() {
     const { crawlLog = {}, crawlResults = [] } = await chrome.storage.local.get({ crawlLog: {}, crawlResults: [] });
     const entries = Object.entries(crawlLog).sort((a, b) => String(b[1].at).localeCompare(String(a[1].at)));
     const cnt = {}; entries.forEach(([, v]) => { cnt[v.status] = (cnt[v.status] || 0) + 1; });
-    $('#cr-info').textContent = `기록 ${entries.length}건 · ` + Object.entries(cnt).map(([k, v]) => `${STATUS_KO[k] || k} ${v}`).join(' · ') + ` · 수집 결과 ${crawlResults.length}행`;
+    const sent = entries.filter(([, v]) => v.nara).length;
+    $('#cr-info').textContent = `기록 ${entries.length}건 · ` + Object.entries(cnt).map(([k, v]) => `${STATUS_KO[k] || k} ${v}`).join(' · ') + ` · 수집 결과 ${crawlResults.length}행` + (sent ? ` · 나라 앱 전송 ${sent}` : '');
     const tb = $('#cr-table tbody'); tb.innerHTML = '';
     if (!entries.length) { tb.innerHTML = '<tr><td colspan="4" class="empty">아직 기록이 없습니다.</td></tr>'; return; }
     for (const [, v] of entries.slice(0, 50)) {
@@ -241,6 +271,8 @@
     $('#gs-url').value = s.sheetUrl; $('#gs-sheet').value = s.sheetName; $('#gs-token').value = s.sheetToken;
     $('#cr-delay').value = String(Number(s.crawlDelay) / 1000);
     if (!s.sheetUrl) $('#gs-guide').open = true;
+    $('#nara-url').value = (await chrome.storage.sync.get({ naraUrl: '' })).naraUrl;
+    $('#nara-token').value = (await chrome.storage.local.get({ naraToken: '' })).naraToken;
     renderScript(); renderLog();
   }
   initCrawl();

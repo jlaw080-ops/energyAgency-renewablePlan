@@ -3,12 +3,13 @@
 //   실제 Chromium 에 확장 프로그램을 올려 크롤링 전 과정을 검증한다.
 // 실행: node test/run-crawl.mjs
 import { createRequire } from 'node:module';
-const { chromium } = createRequire(import.meta.url)('/opt/node22/lib/node_modules/playwright');
+const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_PATH || '/opt/node22/lib/node_modules/playwright');
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 
-const root = path.resolve(new URL('..', import.meta.url).pathname);
+const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const outDir = path.join(root, 'test/output'); fs.mkdirSync(outDir, { recursive: true });
 const extDir = path.join(outDir, 'ext-crawl'); fs.rmSync(extDir, { recursive: true, force: true });
 fs.cpSync(path.join(root, 'extension'), extDir, { recursive: true });
@@ -170,8 +171,22 @@ const SHEET0 = [{ A: '수요기관', B: '공고명' }, { A: '서울특별시', B
 let sheet = SHEET0.map((r) => ({ ...r }));
 const tokens = new Set();
 let popupsOpened = 0;
+// ---------- 가짜 나라 앱 (POST /api/nr-plans, GET /api/nr-plans/ping, Bearer 토큰) ----------
+const NARA_TOKEN = 'test-import-token';
+let naraRows = [];
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
+  if (u.pathname.startsWith('/nara/api/nr-plans')) {
+    res.setHeader('content-type', 'application/json');
+    if (req.headers.authorization !== `Bearer ${NARA_TOKEN}`) { res.statusCode = 401; return res.end('{"ok":false}'); }
+    if (u.pathname.endsWith('/ping')) return res.end('{"ok":true}');
+    let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
+      const body = JSON.parse(b);
+      naraRows.push(...body.rows);
+      res.end(JSON.stringify({ ok: true, results: body.rows.map((r) => ({ key: r.key, saved: 'created', match: 'linked', project_id: 1, error: null })) }));
+    });
+    return;
+  }
   if (u.pathname === '/sheet' && req.method === 'POST') {
     let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
       const body = JSON.parse(b); tokens.add(body.token);
@@ -201,7 +216,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 async function runVariant(v) {
 console.log(`\n===== 변형 ${v} =====`);
-sheet = SHEET0.map((r) => ({ ...r })); popupsOpened = 0; tokens.clear();
+sheet = SHEET0.map((r) => ({ ...r })); popupsOpened = 0; tokens.clear(); naraRows = [];
 const prof = path.join(outDir, 'profile-crawl-' + v);
 fs.rmSync(prof, { recursive: true, force: true });
 const ctx = await chromium.launchPersistentContext(prof, {
@@ -226,6 +241,16 @@ await opt.waitForFunction(() => /연결/.test(document.querySelector('#gs-msg').
 const pingMsg = await opt.textContent('#gs-msg');
 check('settings: 연결 테스트 성공', pingMsg.includes('연결 성공') && pingMsg.includes('3행부터'), pingMsg);
 check('settings: 토큰이 시트로 전달됨', tokens.has(token));
+await opt.fill('#nara-url', `${base}/nara/`);
+await opt.fill('#nara-token', 'wrong');
+await opt.click('#nara-save');
+await opt.waitForFunction(() => !/확인 중/.test(document.querySelector('#nara-msg').textContent) && document.querySelector('#nara-msg').textContent);
+const naraBad = await opt.textContent('#nara-msg');
+check('settings: 나라 앱 토큰이 틀리면 알려 줌', naraBad.includes('토큰'), naraBad);
+await opt.fill('#nara-token', NARA_TOKEN);
+await opt.click('#nara-save');
+await opt.waitForFunction(() => /연결 성공/.test(document.querySelector('#nara-msg').textContent));
+check('settings: 나라 앱 연결 테스트 성공', true, await opt.textContent('#nara-msg'));
 
 // 2) 목록 페이지에서 크롤링 시작
 const page = await ctx.newPage();
@@ -288,7 +313,15 @@ check('sheet: R 에너지원 개요', r1.R === '지열 수직밀폐형: 336.060 
 const draft = written.find((r) => r.B === '서울 반려동물 테마파크 조성');
 check('sheet: 신청번호 없는(작성중) 건도 기록', !!draft && draft.R === '연료전지 PEMFC: 30.000 kW', draft && draft.R);
 
+check('nara: 일정 있고 준공 전인 3건을 보냄 (시트에 이미 있는 건 포함)', naraRows.length === 3, JSON.stringify(naraRows.map((r) => r.name)));
+const n1 = naraRows.find((r) => r.key === '2603040001') || {};
+check('nara: 기관·건물·주소·부서', n1.org === '서울특별시' && n1.name === '노들섬 하늘예술정원 조성사업' && n1.addr === '서울특별시 용산구 양녕로 445 446 일대 (이촌동)' && n1.dept === '미래공간담당관', JSON.stringify(n1));
+check('nara: 날짜는 YYYY-MM-DD', n1.start === '2026-07-01' && n1.end === '2028-03-31', `${n1.start} ${n1.end}`);
+check('nara: 에너지원은 구조화된 배열',
+  JSON.stringify(n1.energy) === JSON.stringify([{ source: '지열', form: '수직밀폐형', capacity_kw: 336.06 }, { source: '태양광', form: 'BIPV', capacity_kw: 17.544 }]),
+  JSON.stringify(n1.energy));
 const log = await storage('crawlLog');
+check('log: 나라 앱 결과 기록', log['2603040001'] && log['2603040001'].nara === 'linked', JSON.stringify(log['2603040001']));
 const statuses = Object.values(log).map((v) => v.status).sort().join(',');
 check('log: 7건 기록 (written 2, exists 1, past 2, nodate 2)', statuses === 'exists,nodate,nodate,past,past,written,written', statuses);
 check('sheet: 착공·준공예정일 빈 건은 시트에 없음', !sheet.some((r) => r.B === '잠실 체육시설 리모델링' || r.B === '마포 문화센터 신축'));
@@ -307,6 +340,7 @@ check('rerun: 기록된 건은 열지 않고, 일정 없음 2건만 다시 확�
 const log2 = await storage('crawlLog');
 check('rerun: 일정 없음 건은 여전히 제외', Object.values(log2).filter((x) => x.status === 'nodate').length === 2);
 check('rerun: 시트에 중복 기록 없음', sheet.length === 4, String(sheet.length));
+check('rerun: 나라 앱에 다시 보내지 않음', naraRows.length === 3, String(naraRows.length));
 
 // 4) 설정 페이지 작업 기록 표시
 await opt.reload();

@@ -1,12 +1,13 @@
 // 확장 프로그램을 실제 Chromium에 로드하여 mock 로그인 페이지에서 동작을 검증한다.
 // 실행: node test/run.mjs   (전역 playwright 사용)
 import { createRequire } from 'node:module';
-const { chromium } = createRequire(import.meta.url)('/opt/node22/lib/node_modules/playwright');
+const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_PATH || '/opt/node22/lib/node_modules/playwright');
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 
-const root = path.resolve(new URL('..', import.meta.url).pathname);
+const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const outDir = path.join(root, 'test/output'); fs.mkdirSync(outDir, { recursive: true });
 const extSrc = path.join(root, 'extension');
 const extDir = path.join(outDir, 'ext-test'); fs.rmSync(extDir, { recursive: true, force: true });

@@ -181,6 +181,27 @@
     <div class="msg" id="cr-msg"></div>
     <table id="cr-table"><thead><tr><th>상태</th><th>기관명</th><th>건물명</th><th>준공예정일</th></tr></thead><tbody></tbody></table>
   </section>
+
+  <section>
+    <h2>5. 나라 앱으로 보내기</h2>
+    <p class="help">크롤링한 설치계획서를 나라 앱(사업 조회 서버)에도 보냅니다. 시트 연결과 함께 써도 되고, 나라 앱만 써도 됩니다.<br>
+      나라 앱 <b>.env</b>의 <b>NARA_IMPORT_TOKEN</b> 값을 토큰 칸에 그대로 넣습니다. 저장할 때 그 주소에 접근해도 되는지 크롬이 한 번 묻습니다.</p>
+    <div class="grid" style="margin-top:12px">
+      <div>
+        <label class="f" for="nara-url">나라 앱 주소</label>
+        <input type="text" id="nara-url" placeholder="http://127.0.0.1:8000">
+      </div>
+      <div>
+        <label class="f" for="nara-token">토큰 (NARA_IMPORT_TOKEN)</label>
+        <input type="password" id="nara-token" autocomplete="off">
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span></span>
+      <button class="primary" id="nara-save">저장 후 연결 테스트</button>
+    </div>
+    <div class="msg" id="nara-msg"></div>
+  </section>
 </div>
 <script src="options.js"></script>
 </body>

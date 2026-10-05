@@ -5,6 +5,7 @@
 //        각 프레임은 자기 안에서 입력칸을 찾아 채운 뒤 'fill-result'로 결과를 보고하고,
 //        그 결과는 다시 최상위 프레임 패널로 전달된다.
 // 역할 3) 크롤링: 다 읽은 팝업 창을 닫고, 구글 시트(Apps Script 웹 앱)에 행을 보낸다.
+// 역할 4) 크롤링: 나라 앱(사업 조회 서버)의 받는 주소로 설치계획서를 보낸다.
 
 chrome.action.onClicked.addListener(() => {
   chrome.runtime.openOptionsPage();
@@ -29,6 +30,31 @@ async function sheetRequest(payload) {
   }
 }
 
+// 나라 앱 받는 주소. 토큰은 Authorization 헤더로 보낸다.
+async function naraRequest(path, body) {
+  const s = { ...(await chrome.storage.sync.get({ naraUrl: '' })), ...(await chrome.storage.local.get({ naraToken: '' })) };
+  if (!s.naraUrl) return { ok: false, error: '나라 앱 주소가 설정되지 않았습니다' };
+  const url = s.naraUrl.replace(/\/+$/, '') + path;
+  try {
+    const res = await fetch(url, {
+      method: body ? 'POST' : 'GET',
+      headers: { Authorization: `Bearer ${s.naraToken}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (res.status === 401) return { ok: false, error: '토큰이 맞지 않습니다. 나라 앱 .env의 NARA_IMPORT_TOKEN과 같은지 확인하세요.' };
+    if (res.status === 404) return { ok: false, error: '받는 주소가 없습니다. 나라 앱 .env에 NARA_IMPORT_TOKEN을 넣고 서버를 다시 띄웠는지 확인하세요.' };
+    const text = await res.text();
+    try {
+      const j = JSON.parse(text);
+      return res.ok ? j : { ok: false, error: j.error || `HTTP ${res.status}` };
+    } catch (e) {
+      return { ok: false, error: `나라 앱 응답을 읽을 수 없습니다 (HTTP ${res.status})` };
+    }
+  } catch (e) {
+    return { ok: false, error: `나라 앱에 연결하지 못했습니다: ${String(e && e.message || e)}` };
+  }
+}
+
 // 크롤링 중 새 팝업 창이 열렸는지 기록 (열리지 않았는지/열렸는데 못 읽었는지 구분용)
 chrome.tabs.onCreated.addListener((tab) => {
   if (tab.openerTabId == null) return;
@@ -45,6 +71,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'sheet-ping') {
     sheetRequest({ action: 'ping' }).then(sendResponse);
+    return true;
+  }
+  if (msg.type === 'nara-send') {
+    naraRequest('/api/nr-plans', { rows: msg.rows }).then(sendResponse);
+    return true;
+  }
+  if (msg.type === 'nara-ping') {
+    naraRequest('/api/nr-plans/ping').then(sendResponse);
     return true;
   }
   if (msg.type === 'open-options') {
