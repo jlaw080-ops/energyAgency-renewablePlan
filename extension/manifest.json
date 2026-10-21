@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "신재생에너지센터 자동입력·크롤링",
   "description": "nr.energy.or.kr 로그인 화면 자동입력(사업자번호·휴대폰)과 설치계획서 정보를 구글 시트로 모으는 크롤링 기능.",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "default_locale": "ko",
   "permissions": [
     "storage",

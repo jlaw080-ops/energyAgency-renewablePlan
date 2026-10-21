@@ -265,6 +265,7 @@ let manualClicks = 0;
 const t0 = Date.now();
 while (Date.now() - t0 < 150000) {
   const st = await storage('crawlState');
+  if (process.env.CRAWL_DEBUG) { const j = JSON.stringify(st); if (j !== waitDone.last) { waitDone.last = j; console.log('[state]', new Date().toISOString(), j); } }
   if (st && !st.running && st.endedAt && (!after || st.startedAt > after)) break;
   if (v === 'C') {
     const lp = ctx.pages().find((p) => p.url().includes('list.do'));
@@ -346,6 +347,31 @@ check('rerun: 나라 앱에 다시 보내지 않음', naraRows.length === 3, Str
 await opt.reload();
 await opt.waitForFunction(() => /기록 7건/.test(document.querySelector('#cr-info').textContent));
 check('settings: 작업 기록 표시', true, await opt.textContent('#cr-info'));
+
+// 5) 전체 받기: 준공 경과·일정 없음으로 제외했던 4건을 다시 열어 시트와 나라 앱에 보낸다
+const openedBefore = popupsOpened;
+const st3 = await storage('crawlState');
+await listPage.check('#nrcrawl-all');
+await listPage.click('#nrcrawl-panel [data-act="start"]');
+await waitDone(st3.startedAt);
+check('all: 제외했던 4건만 다시 열림', popupsOpened === openedBefore + 4, `opened=${popupsOpened - openedBefore}`);
+check('all: 시트에 4행 추가 (총 8행)', sheet.length === 8, String(sheet.length));
+check('all: 나라 앱에 4건 추가 전송 (총 7건)', naraRows.length === 7, String(naraRows.length));
+check('all: 날짜 없는 건은 빈 날짜로 보냄', naraRows.some((r) => r.key === '2401010001' && r.start === '' && r.end === '2029-01-01'), JSON.stringify(naraRows.find((r) => r.key === '2401010001')));
+const log3 = await storage('crawlLog');
+const flagged = Object.values(log3);
+check('all: 제외 상태가 남지 않음', !flagged.some((x) => x.status === 'past' || x.status === 'nodate'), flagged.map((x) => x.status).join(','));
+check('all: 준공 경과 2건·일정 없음 2건 표시', flagged.filter((x) => x.past).length === 2 && flagged.filter((x) => x.nodate).length === 2);
+const stAll = await storage('crawlState');
+check('all: 패널 통계는 포함으로 셈', stAll.all === true && stAll.stats.past === 2 && stAll.stats.nodate === 2, JSON.stringify(stAll.stats));
+await opt.reload();
+await opt.waitForFunction(() => /\(준공 경과\)/.test(document.querySelector('#cr-table').textContent));
+check('settings: 작업 기록에 (준공 경과) 표시', true);
+// 켠 채로 다시 실행하면 더 열지 않는다 — 모두 보냈기 때문
+await listPage.click('#nrcrawl-panel [data-act="start"]');
+await waitDone(stAll.startedAt);
+check('all: 다시 실행해도 여는 건 없음', popupsOpened === openedBefore + 4, `opened=${popupsOpened - openedBefore}`);
+await listPage.uncheck('#nrcrawl-all');
 await opt.screenshot({ path: path.join(outDir, `crawl-options-${v}.png`), fullPage: true });
 
 await ctx.close();

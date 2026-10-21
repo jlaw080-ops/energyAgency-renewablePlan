@@ -246,7 +246,9 @@
     for (const [, v] of entries.slice(0, 50)) {
       const tr = document.createElement('tr');
       tr.innerHTML = '<td></td><td></td><td></td><td></td>';
-      [STATUS_KO[v.status] || v.status, v.org, v.name, v.end].forEach((t, i) => { tr.children[i].textContent = t || ''; });
+      // 전체 받기로 받은 건은 상태 뒤에 그 사실을 붙인다
+      const flags = (v.past ? ' (준공 경과)' : '') + (v.nodate ? ' (일정 없음)' : '');
+      [(STATUS_KO[v.status] || v.status) + flags, v.org, v.name, v.end].forEach((t, i) => { tr.children[i].textContent = t || ''; });
       tb.appendChild(tr);
     }
   }

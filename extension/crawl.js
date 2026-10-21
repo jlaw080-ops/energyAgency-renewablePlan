@@ -4,6 +4,7 @@
 //   목록 페이지: 각 행의 건물명을 클릭 → 팝업이 열림
 //   팝업 페이지: 기관명·담당부서·건물명·주소·착공/준공예정일·에너지원 표를 읽어 저장소(crawlInbox)에 넣고 닫힘
 //   목록 페이지: 준공예정일이 오늘보다 이전이면 제외, 아니면 구글 시트에 한 행 추가
+//   '준공일 조건 없이 전체 받기'(crawlAll)를 켜면 준공 경과·일정 없음 건도 모두 받는다
 //              (나라 앱 주소가 설정돼 있으면 나라 앱에도 보냄)
 //   작업 기록(crawlLog)에 남긴 건은 다음 실행 때 건너뜀
 //   한 페이지가 끝나면 다음 페이지 번호를 눌러 계속 진행
@@ -18,7 +19,8 @@
 
   const VERSION = '1.5.0';
   const isTop = window.top === window;
-  const STATE = 'crawlState';     // { running, awaiting, assist, page, stats, startedAt }
+  const STATE = 'crawlState';     // { running, awaiting, assist, page, stats, startedAt, all }
+  const ALL = 'crawlAll';         // (sync) 준공일 조건 없이 전체 받기 — 패널 체크박스
   const LOG = 'crawlLog';         // { [key]: { status, org, name, at } }
   const RESULTS = 'crawlResults'; // 수집한 시트 행 목록 (복사용 백업)
   const INBOX = 'crawlInbox';     // 팝업 → 목록 페이지 전달용
@@ -583,8 +585,11 @@
           let st = await getState();
           if (!st.running) { ui(); return; }
           const log = await get(LOG, {});
-          // 이미 처리한 건은 건너뜀. 단, 일정이 비어 제외했던 건은 그 사이 입력됐을 수 있어 다시 확인
-          if (log[it.key] && log[it.key].status !== 'nodate') continue;
+          const all = !!st.all;
+          // 이미 처리한 건은 건너뜀. 단, 일정이 비어 제외했던 건은 그 사이 입력됐을 수 있어 다시 확인.
+          // 전체 받기면 준공 경과로 제외했던 건도 다시 열어 받는다
+          const prev = log[it.key] && log[it.key].status;
+          if (prev && prev !== 'nodate' && !(all && prev === 'past')) continue;
 
           const res = await openOne(it);
           st = await getState();
@@ -603,16 +608,23 @@
           failStreak = 0;
           const d = res.data;
           const end = ymd(d.end);
+          const noDate = !ymd(d.start) || !end;
+          const past = !!end && end < todayStart();
           const entry = { org: d.org || it.org, name: d.name || it.name, end: fmtDate(d.end), at: new Date().toISOString() };
+          // 전체 받기면 날짜 조건으로 빼지 않고 기록에 표시만 남긴다 (설정 페이지 작업 기록에 보임)
+          if (all && noDate) entry.nodate = true;
+          if (all && past) entry.past = true;
 
-          if (!ymd(d.start) || !end) {
+          if (!all && noDate) {
             // 착공예정일 또는 준공예정일이 비어 있으면 시트에 쓰지 않음
             log[it.key] = { ...entry, status: 'nodate', start: fmtDate(d.start) };
             stats.nodate = (stats.nodate || 0) + 1;
-          } else if (end < todayStart()) {
+          } else if (!all && past) {
             log[it.key] = { ...entry, status: 'past' };
             stats.past = (stats.past || 0) + 1;
           } else {
+            if (noDate) stats.nodate = (stats.nodate || 0) + 1;
+            if (past) stats.past = (stats.past || 0) + 1;
             const row = toSheetRow(d, it.key);
             const results = await get(RESULTS, []);
             results.push(row);
@@ -718,6 +730,7 @@
           <button type="button" class="nrcrawl-btn" data-act="start">크롤링 시작</button>
           <button type="button" class="nrcrawl-btn secondary" data-act="stop">중지</button>
         </div>
+        <label class="nrcrawl-opt" title="준공예정일이 지났거나 착공·준공일이 비어 있는 건도 모두 받습니다. 전에 그 이유로 제외한 건도 다시 엽니다"><input type="checkbox" id="nrcrawl-all"> 준공일 조건 없이 전체 받기</label>
         <div class="nrcrawl-stats" id="nrcrawl-stats"></div>
         <div class="nrcrawl-msg" id="nrcrawl-msg"></div>
         <div class="nrcrawl-foot"><span id="nrcrawl-foot"></span><a data-act="diag">진단 정보 복사</a></div>
@@ -725,6 +738,11 @@
     document.documentElement.appendChild(panel);
     placePanel();
     setTimeout(placePanel, 2000);
+    chrome.storage.sync.get({ [ALL]: false }, (s) => { panel.querySelector('#nrcrawl-all').checked = !!s[ALL]; });
+    panel.querySelector('#nrcrawl-all').addEventListener('change', (e) => {
+      chrome.storage.sync.set({ [ALL]: e.target.checked });
+      ui(e.target.checked ? '다음 시작부터 준공일 조건 없이 전체 받습니다.' : '다음 시작부터 준공일이 지난 건을 제외합니다.');
+    });
     panel.addEventListener('click', async (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'settings') send({ type: 'open-options' });
@@ -753,11 +771,11 @@
   }
 
   async function start() {
-    const { sheetUrl, naraUrl } = await new Promise((r) => chrome.storage.sync.get({ sheetUrl: '', naraUrl: '' }, r));
+    const { sheetUrl, naraUrl, [ALL]: all } = await new Promise((r) => chrome.storage.sync.get({ sheetUrl: '', naraUrl: '', [ALL]: false }, r));
     if (!sheetUrl && !naraUrl && !confirm('구글 시트 연결(설정 4번)이 아직 없습니다.\n시트에 쓰지 않고 수집만 할까요? (설정 페이지에서 결과를 복사할 수 있습니다)')) return;
     try { sessionStorage.setItem('nrcrawl', '1'); } catch (e) { /* ignore */ }
-    await set({ [STATE]: { running: true, awaiting: null, assist: false, page: 1, stats: {}, startedAt: new Date().toISOString() }, [POPUP_DIAG]: null });
-    ui('시작합니다.');
+    await set({ [STATE]: { running: true, awaiting: null, assist: false, page: 1, stats: {}, startedAt: new Date().toISOString(), all: !!all }, [POPUP_DIAG]: null });
+    ui(all ? '시작합니다 — 준공일 조건 없이 전체 받습니다.' : '시작합니다.');
     // 2페이지 이후에서 시작했다면 1페이지로 먼저 이동
     const l = findList();
     const p = l && findPager(l.tables);
@@ -770,16 +788,23 @@
     runCrawl();
   }
 
+  // 상태를 비동기로 읽는 사이 더 새 호출이 들어오면 옛 호출은 그리지 않는다.
+  // 끝나는 순간 두 호출이 겹치면 '실행 중'을 읽은 옛 쪽이 나중에 그려 버튼이 잠긴 채 남았다.
+  let uiSeq = 0;
   async function ui(msg) {
     if (!panel) return;
+    const seq = ++uiSeq;
     const st = await getState();
     const s = st.stats || {};
     const log = await get(LOG, {});
+    if (seq !== uiSeq) return;
     panel.querySelector('[data-act="start"]').disabled = !!st.running;
     panel.querySelector('[data-act="stop"]').disabled = !st.running;
+    panel.querySelector('#nrcrawl-all').disabled = !!st.running;
+    const how = st.all ? '포함' : '제외';
     panel.querySelector('#nrcrawl-stats').innerHTML =
       `<span>시트 작성 <b>${s.written || 0}</b></span><span>수집 <b>${s.collected || 0}</b></span><span>나라 앱 <b>${s.nara || 0}</b></span>` +
-      `<span>준공 경과 제외 <b>${s.past || 0}</b></span><span>시트에 이미 있음 <b>${s.exists || 0}</b></span><span>일정 없음 제외 <b>${s.nodate || 0}</b></span><span>오류 <b>${s.error || 0}</b></span>` +
+      `<span>준공 경과 ${how} <b>${s.past || 0}</b></span><span>시트에 이미 있음 <b>${s.exists || 0}</b></span><span>일정 없음 ${how} <b>${s.nodate || 0}</b></span><span>오류 <b>${s.error || 0}</b></span>` +
       (st.running && st.assist ? '<span class="assist">직접 클릭 모드</span>' : '');
     const m = panel.querySelector('#nrcrawl-msg');
     m.textContent = msg || st.lastMessage || (st.running ? '진행 중…' : '대기 중');
