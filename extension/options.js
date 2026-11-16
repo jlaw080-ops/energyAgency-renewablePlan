@@ -218,7 +218,7 @@
         if (!/^https?:$/.test(u.protocol)) throw new Error('scheme');
         origin = `${u.protocol}//${u.hostname}/*`;
       } catch (e) {
-        return msg('#nara-msg', '나라 앱 주소는 http://127.0.0.1:8000 처럼 적으세요.', 'err');
+        return msg('#nara-msg', '나라 앱 주소는 http://127.0.0.1:8120 처럼 적으세요.', 'err');
       }
     }
     const ask = origin ? chrome.permissions.request({ origins: [origin] }) : Promise.resolve(true);
